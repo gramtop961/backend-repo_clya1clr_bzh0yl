@@ -38,11 +38,13 @@ class Product(BaseModel):
     category: str = Field(..., description="Product category")
     in_stock: bool = Field(True, description="Whether product is in stock")
 
-# Add your own schemas here:
-# --------------------------------------------------
-
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+# Mosque fundraiser donation schema
+class Donation(BaseModel):
+    """
+    Donations collection schema
+    Collection name: "donation"
+    """
+    name: Optional[str] = Field(None, description="Donor name (optional if anonymous)")
+    amount: float = Field(..., gt=0, description="Donation amount in dollars")
+    message: Optional[str] = Field(None, description="Short note from donor")
+    anonymous: bool = Field(False, description="If true, donor name is hidden")

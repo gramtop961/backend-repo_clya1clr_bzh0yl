@@ -1,6 +1,12 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Optional, Any, Dict
+from bson import ObjectId
+
+from database import db, create_document, get_documents
+from schemas import Donation
 
 app = FastAPI()
 
@@ -12,13 +18,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI Backend!"}
+    return {"message": "Mosque Fundraiser API Running"}
+
 
 @app.get("/api/hello")
 def hello():
     return {"message": "Hello from the backend API!"}
+
 
 @app.get("/test")
 def test_database():
@@ -31,38 +40,97 @@ def test_database():
         "connection_status": "Not Connected",
         "collections": []
     }
-    
+
     try:
-        # Try to import database module
-        from database import db
-        
         if db is not None:
             response["database"] = "✅ Available"
             response["database_url"] = "✅ Configured"
             response["database_name"] = db.name if hasattr(db, 'name') else "✅ Connected"
             response["connection_status"] = "Connected"
-            
-            # Try to list collections to verify connectivity
+
             try:
                 collections = db.list_collection_names()
-                response["collections"] = collections[:10]  # Show first 10 collections
+                response["collections"] = collections[:10]
                 response["database"] = "✅ Connected & Working"
             except Exception as e:
                 response["database"] = f"⚠️  Connected but Error: {str(e)[:50]}"
         else:
             response["database"] = "⚠️  Available but not initialized"
-            
-    except ImportError:
-        response["database"] = "❌ Database module not found (run enable-database first)"
+
     except Exception as e:
         response["database"] = f"❌ Error: {str(e)[:50]}"
-    
+
     # Check environment variables
-    import os
     response["database_url"] = "✅ Set" if os.getenv("DATABASE_URL") else "❌ Not Set"
     response["database_name"] = "✅ Set" if os.getenv("DATABASE_NAME") else "❌ Not Set"
-    
+
     return response
+
+
+# Utilities
+class DonationResponse(BaseModel):
+    id: str
+    name: Optional[str]
+    amount: float
+    message: Optional[str]
+    anonymous: bool
+
+
+def serialize_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    d = dict(doc)
+    if "_id" in d:
+        d["id"] = str(d.pop("_id"))
+    # Convert any ObjectIds inside
+    for k, v in list(d.items()):
+        if isinstance(v, ObjectId):
+            d[k] = str(v)
+    return d
+
+
+# Fundraiser endpoints
+@app.post("/api/donations", response_model=DonationResponse)
+async def create_donation(payload: Donation):
+    try:
+        donation_id = create_document("donation", payload)
+        # fetch the created document to return
+        created = db["donation"].find_one({"_id": ObjectId(donation_id)})
+        return DonationResponse(**serialize_doc(created))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/donations", response_model=List[DonationResponse])
+async def list_donations(limit: int = 10):
+    try:
+        docs = get_documents("donation", {}, limit=limit)
+        # latest first
+        docs_sorted = sorted(docs, key=lambda x: x.get("created_at"), reverse=True)
+        return [DonationResponse(**serialize_doc(d)) for d in docs_sorted]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class StatsResponse(BaseModel):
+    total_amount: float
+    total_donations: int
+
+
+@app.get("/api/stats", response_model=StatsResponse)
+async def get_stats():
+    try:
+        if db is None:
+            raise Exception("Database not available")
+        pipeline = [
+            {"$group": {"_id": None, "total_amount": {"$sum": "$amount"}, "count": {"$sum": 1}}}
+        ]
+        agg = list(db["donation"].aggregate(pipeline))
+        if not agg:
+            return StatsResponse(total_amount=0.0, total_donations=0)
+        total_amount = float(agg[0].get("total_amount", 0.0))
+        count = int(agg[0].get("count", 0))
+        return StatsResponse(total_amount=total_amount, total_donations=count)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
